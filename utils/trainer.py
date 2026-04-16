@@ -309,8 +309,15 @@ class STTrainer:
         best_epoch = -1
         eval_every = max(1, int(getattr(self.args, "eval_every", 1)))
         eval_k = int(getattr(self.args, "eval_k", 5))
+        eval_split = str(getattr(self.args, "eval_split", "val")).lower()
+        if eval_split not in {"val", "test"}:
+            raise ValueError(f"Unsupported eval split `{eval_split}`")
         miss_threshold = float(getattr(self.args, "miss_threshold", 2.0))
         nan_fill = str(getattr(self.args, "nan_fill", "nan"))
+        if eval_split == "test" and self.loader_test is None:
+            raise RuntimeError("eval_split=test requested, but test loader is unavailable.")
+        eval_loader = self.loader_val if eval_split == "val" else self.loader_test
+        eval_split_name = f"Eval-{eval_split}"
 
         for epoch in range(self.hyper_params.num_epochs):
             self._set_epoch(epoch)
@@ -336,8 +343,8 @@ class STTrainer:
             should_eval = ((epoch + 1) % eval_every == 0) or (epoch + 1 == self.hyper_params.num_epochs)
             if should_eval:
                 eval_results = self.test(
-                    loader=self.loader_val,
-                    split="Eval",
+                    loader=eval_loader,
+                    split=eval_split_name,
                     eval_k=eval_k,
                     miss_threshold=miss_threshold,
                     nan_fill=nan_fill,
@@ -350,6 +357,7 @@ class STTrainer:
                     self.save_model()
                 if self.is_main:
                     print("Eval metrics:")
+                    print(f"  EvalSplit: {eval_split}")
                     print(f"  minADE_{eval_k}: {eval_results[f'minADE_{eval_k}']:.6f}")
                     print(f"  minFDE_{eval_k}: {eval_results[f'minFDE_{eval_k}']:.6f}")
                     print(f"  MissRate: {eval_results['MissRate']:.2%}")
@@ -414,24 +422,28 @@ class STSequencedMiniBatchTrainer(STTrainer):
         pin_memory = bool(getattr(args, "pin_memory", True))
         seed = int(getattr(args, "seed", 0))
         train_subset = max(0, int(getattr(args, "train_subset", 0)))
+        batch_by_location = bool(getattr(args, "batch_by_location", False))
         interaction_data_path = str(getattr(hyper_params, "interaction_data_path", "") or "")
         self.loader_train = get_dataloader(
             self.dataset_dir, 'train', obs_len, pred_len, batch_size=1, skip=skip,
             num_workers=num_workers, pin_memory=pin_memory, distributed=self.distributed,
             rank=self.rank, world_size=self.world_size, seed=seed,
-            interaction_data_path=interaction_data_path, train_subset=train_subset)
+            interaction_data_path=interaction_data_path, train_subset=train_subset,
+            batch_by_location=batch_by_location)
         self.loader_val = get_dataloader(
             self.dataset_dir, 'val', obs_len, pred_len, batch_size=1,
             num_workers=num_workers, pin_memory=pin_memory, distributed=self.distributed,
             rank=self.rank, world_size=self.world_size, seed=seed,
-            interaction_data_path=interaction_data_path)
+            interaction_data_path=interaction_data_path,
+            batch_by_location=batch_by_location)
         self.loader_test = None
         try:
             self.loader_test = get_dataloader(
                 self.dataset_dir, 'test', obs_len, pred_len, batch_size=1,
                 num_workers=num_workers, pin_memory=pin_memory, distributed=self.distributed,
                 rank=self.rank, world_size=self.world_size, seed=seed,
-                interaction_data_path=interaction_data_path)
+                interaction_data_path=interaction_data_path,
+                batch_by_location=batch_by_location)
         except KeyError:
             if bool(getattr(args, "test", False)):
                 raise
@@ -557,24 +569,28 @@ class STCollatedMiniBatchTrainer(STTrainer):
         pin_memory = bool(getattr(args, "pin_memory", True))
         seed = int(getattr(args, "seed", 0))
         train_subset = max(0, int(getattr(args, "train_subset", 0)))
+        batch_by_location = bool(getattr(args, "batch_by_location", False))
         interaction_data_path = str(getattr(hyper_params, "interaction_data_path", "") or "")
         self.loader_train = get_dataloader(
             self.dataset_dir, 'train', obs_len, pred_len, batch_size=batch_size, skip=skip,
             num_workers=num_workers, pin_memory=pin_memory, distributed=self.distributed,
             rank=self.rank, world_size=self.world_size, seed=seed,
-            interaction_data_path=interaction_data_path, train_subset=train_subset)
+            interaction_data_path=interaction_data_path, train_subset=train_subset,
+            batch_by_location=batch_by_location)
         self.loader_val = get_dataloader(
             self.dataset_dir, 'val', obs_len, pred_len, batch_size=batch_size,
             num_workers=num_workers, pin_memory=pin_memory, distributed=self.distributed,
             rank=self.rank, world_size=self.world_size, seed=seed,
-            interaction_data_path=interaction_data_path)
+            interaction_data_path=interaction_data_path,
+            batch_by_location=batch_by_location)
         self.loader_test = None
         try:
             self.loader_test = get_dataloader(
                 self.dataset_dir, 'test', obs_len, pred_len, batch_size=1,
                 num_workers=num_workers, pin_memory=pin_memory, distributed=self.distributed,
                 rank=self.rank, world_size=self.world_size, seed=seed,
-                interaction_data_path=interaction_data_path)
+                interaction_data_path=interaction_data_path,
+                batch_by_location=batch_by_location)
         except KeyError:
             if bool(getattr(args, "test", False)):
                 raise

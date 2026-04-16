@@ -26,6 +26,7 @@ def get_dataloader(
     seed=0,
     interaction_data_path="",
     train_subset=0,
+    batch_by_location=False,
 ):
     r"""Get dataloader for a specific phase
 
@@ -71,9 +72,16 @@ def get_dataloader(
                 drop_last=drop_last,
                 seed=seed,
                 even_divisible=(phase == 'train'),
+                group_by_scene=bool(batch_by_location),
             )
         else:
-            batch_sampler_phase = TrajBatchSampler(dataset_phase, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last)
+            batch_sampler_phase = TrajBatchSampler(
+                dataset_phase,
+                batch_size=batch_size,
+                shuffle=shuffle,
+                drop_last=drop_last,
+                group_by_scene=bool(batch_by_location),
+            )
         loader_phase = DataLoader(
             dataset_phase,
             collate_fn=traj_collate_fn,
@@ -161,12 +169,39 @@ class TrajBatchSampler(Sampler):
         generator (Generator): Generator used in sampling.
     """
 
-    def __init__(self, data_source, batch_size=64, shuffle=False, drop_last=False, generator=None):
+    def __init__(self, data_source, batch_size=64, shuffle=False, drop_last=False, generator=None, group_by_scene=False):
         self.data_source = data_source
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.drop_last = drop_last
         self.generator = generator
+        self.group_by_scene = bool(group_by_scene)
+
+    @staticmethod
+    def _permute_list(values, generator):
+        if len(values) <= 1:
+            return list(values)
+        order = torch.randperm(len(values), generator=generator).tolist()
+        return [values[i] for i in order]
+
+    def _build_indices(self, generator):
+        if not self.group_by_scene or not hasattr(self.data_source, "scene_id_per_seq"):
+            if self.shuffle:
+                return torch.randperm(len(self.data_source), generator=generator).tolist()
+            return list(range(len(self.data_source)))
+
+        scene_ids = np.asarray(self.data_source.scene_id_per_seq)
+        unique_scene = list(np.unique(scene_ids))
+        if self.shuffle:
+            unique_scene = self._permute_list(unique_scene, generator)
+
+        indices = []
+        for scene_name in unique_scene:
+            scene_indices = np.where(scene_ids == scene_name)[0].tolist()
+            if self.shuffle:
+                scene_indices = self._permute_list(scene_indices, generator)
+            indices.extend(scene_indices)
+        return indices
 
     def __iter__(self):
         assert len(self.data_source) == len(self.data_source.num_peds_in_seq)
@@ -177,9 +212,10 @@ class TrajBatchSampler(Sampler):
                 generator.manual_seed(int(torch.empty((), dtype=torch.int64).random_().item()))
             else:
                 generator = self.generator
-            indices = torch.randperm(len(self.data_source), generator=generator).tolist()
         else:
-            indices = list(range(len(self.data_source)))
+            generator = torch.Generator()
+            generator.manual_seed(0)
+        indices = self._build_indices(generator)
         num_peds_indices = self.data_source.num_peds_in_seq[indices]
 
         batch = []
@@ -219,6 +255,7 @@ class DistributedTrajBatchSampler(Sampler):
         drop_last=False,
         seed=0,
         even_divisible=True,
+        group_by_scene=False,
     ):
         self.data_source = data_source
         self.batch_size = batch_size
@@ -228,6 +265,7 @@ class DistributedTrajBatchSampler(Sampler):
         self.drop_last = drop_last
         self.seed = int(seed)
         self.even_divisible = bool(even_divisible)
+        self.group_by_scene = bool(group_by_scene)
         self.epoch = 0
 
     def set_epoch(self, epoch):
@@ -244,6 +282,7 @@ class DistributedTrajBatchSampler(Sampler):
             shuffle=self.shuffle,
             drop_last=self.drop_last,
             generator=generator,
+            group_by_scene=self.group_by_scene,
         )
         return list(iter(base_sampler))
 
@@ -337,6 +376,7 @@ class TrajectoryDataset(Dataset):
         non_linear_ped = []
         frame_list = []
         scene_id = []
+        seq_scene_id = []
         self.homography = {}
         self.vector_field = {}
         scene_img_map = {'biwi_eth': 'seq_eth', 'biwi_hotel': 'seq_hotel',
@@ -396,6 +436,7 @@ class TrajectoryDataset(Dataset):
                     seq_list.append(curr_seq[:num_peds_considered])
                     frame_list.extend([frames[idx]] * num_peds_considered)
                     scene_id.extend([scene_name] * num_peds_considered)
+                    seq_scene_id.append(scene_name)
 
         self.num_seq = len(seq_list)
         seq_list = np.concatenate(seq_list, axis=0)
@@ -404,6 +445,7 @@ class TrajectoryDataset(Dataset):
         self.num_peds_in_seq = np.array(num_peds_in_seq)
         self.frame_list = np.array(frame_list, dtype=np.int32)
         self.scene_id = np.array(scene_id)
+        self.scene_id_per_seq = np.array(seq_scene_id)
 
         # Convert numpy -> Torch Tensor
         self.obs_traj = torch.from_numpy(seq_list[:, :, :self.obs_len]).type(torch.float).permute(0, 2, 1)  # NTC
@@ -466,6 +508,7 @@ class InteractionTrajectoryDataset(Dataset):
         non_linear_ped = []
         frame_list = []
         scene_id = []
+        seq_scene_id = []
         self.homography = {}
         self.vector_field = {}
 
@@ -506,6 +549,7 @@ class InteractionTrajectoryDataset(Dataset):
             frame_list.extend([start_frame] * n_ped)
             location_name = str(sample.get("location_name", "interaction"))
             scene_id.extend([location_name] * n_ped)
+            seq_scene_id.append(location_name)
 
         assert len(seq_list) > 0, f"No valid samples found in INTERACTION split `{split_key}` ({data_path})"
 
@@ -516,6 +560,7 @@ class InteractionTrajectoryDataset(Dataset):
         self.num_peds_in_seq = np.array(num_peds_in_seq)
         self.frame_list = np.array(frame_list, dtype=np.int32)
         self.scene_id = np.array(scene_id)
+        self.scene_id_per_seq = np.array(seq_scene_id)
 
         # Convert numpy -> Torch Tensor
         self.obs_traj = torch.from_numpy(seq_list[:, :, :self.obs_len]).type(torch.float).permute(0, 2, 1)  # NTC

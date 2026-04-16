@@ -43,6 +43,7 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint_dir', default="", type=str, help="override checkpoint root directory in config")
     parser.add_argument('--eval_every', default=1, type=int, help="run metric evaluation every N epochs")
     parser.add_argument('--eval_k', default=5, type=int, help="K used for minADE_K/minFDE_K")
+    parser.add_argument('--eval_split', default="val", choices=["val", "test"], type=str, help="which split to use for periodic evaluation and checkpoint selection")
     parser.add_argument('--miss_threshold', default=2.0, type=float, help="MissRate threshold in meters")
     parser.add_argument('--epochs', default=0, type=int, help="override num_epochs in config when > 0")
     parser.add_argument('--batch_size', default=0, type=int, help="override batch_size in config when > 0")
@@ -51,6 +52,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_samples', default=0, type=int, help="override ST sample count (num_samples in config) when > 0")
     parser.add_argument('--train_subset', default=0, type=int, help="use deterministic subset of train scenes for INTERACTION when > 0")
     parser.add_argument('--eval_batches', default=0, type=int, help="limit valid/test to first N batches when > 0; 0 means full")
+    parser.add_argument('--batch_by_location', default=False, action='store_true', help="batch sequences grouped by location/scene id when batch_size > 1")
     parser.add_argument(
         '--best_metric',
         default="val_loss",
@@ -138,7 +140,16 @@ if __name__ == '__main__':
             model_trainer.fit()
         else:
             model_trainer.load_model()
+            eval_split = str(getattr(args, "eval_split", "test")).lower()
+            if eval_split == "val":
+                eval_loader = model_trainer.loader_val
+            else:
+                eval_loader = model_trainer.loader_test
+                if eval_loader is None:
+                    raise RuntimeError("Requested eval_split=test but test loader is unavailable.")
             results = model_trainer.test(
+                loader=eval_loader,
+                split=f"Test-{eval_split}",
                 eval_k=args.eval_k,
                 miss_threshold=args.miss_threshold,
                 nan_fill=args.nan_fill,

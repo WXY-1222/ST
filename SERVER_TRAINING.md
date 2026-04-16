@@ -71,6 +71,8 @@ torchrun --standalone --nproc_per_node=8 trainval.py \
   --weight_decay 1e-4 \
   --train_subset 5000 \
   --eval_batches 0 \
+  --batch_by_location \
+  --eval_split val \
   --eval_every 4 \
   --eval_k 5 \
   --num_samples 5 \
@@ -83,3 +85,4 @@ Notes:
 - `interaction_data_path` is read from the cfg file. Update it to your actual DIGIR pkl path when needed.
 - INTERACTION has no ETH/UCY-style homography/vectorfield in this pipeline, so ST uses initial anchors (no map-based anchor refinement).
 - If your INTERACTION pkl has no `test` split, training still works (`train` + `val`), but `--test` mode now requires an explicit `test` split (no silent fallback to `val`).
+- For protocol alignment with DIGIR, set `--eval_split`, `--eval_k`, `--num_samples`, `--train_subset`, `--eval_batches`, and `--batch_by_location` explicitly.
