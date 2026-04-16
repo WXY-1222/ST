@@ -44,6 +44,13 @@ if __name__ == '__main__':
     parser.add_argument('--eval_every', default=1, type=int, help="run metric evaluation every N epochs")
     parser.add_argument('--eval_k', default=5, type=int, help="K used for minADE_K/minFDE_K")
     parser.add_argument('--miss_threshold', default=2.0, type=float, help="MissRate threshold in meters")
+    parser.add_argument('--epochs', default=0, type=int, help="override num_epochs in config when > 0")
+    parser.add_argument('--batch_size', default=0, type=int, help="override batch_size in config when > 0")
+    parser.add_argument('--lr', default=-1.0, type=float, help="override learning rate in config when > 0")
+    parser.add_argument('--weight_decay', default=-1.0, type=float, help="override weight_decay in config when >= 0")
+    parser.add_argument('--num_samples', default=0, type=int, help="override ST sample count (num_samples in config) when > 0")
+    parser.add_argument('--train_subset', default=0, type=int, help="use deterministic subset of train scenes for INTERACTION when > 0")
+    parser.add_argument('--eval_batches', default=0, type=int, help="limit valid/test to first N batches when > 0; 0 means full")
     parser.add_argument(
         '--best_metric',
         default="val_loss",
@@ -88,8 +95,23 @@ if __name__ == '__main__':
             hyper_params.dataset_dir = args.dataset_dir
         if args.checkpoint_dir:
             hyper_params.checkpoint_dir = args.checkpoint_dir
+        if args.epochs > 0:
+            hyper_params.num_epochs = args.epochs
+        if args.batch_size > 0:
+            hyper_params.batch_size = args.batch_size
+        if args.lr > 0:
+            hyper_params.lr = args.lr
+        if args.weight_decay >= 0:
+            hyper_params.weight_decay = args.weight_decay
+        if args.num_samples > 0:
+            hyper_params.num_samples = args.num_samples
         if args.is_main:
             print_arguments(hyper_params)
+            if int(args.eval_k) > int(hyper_params.num_samples):
+                print(
+                    f"Warning: eval_k={args.eval_k} is larger than num_samples={hyper_params.num_samples}; "
+                    f"effective K will be clipped to {hyper_params.num_samples}."
+                )
 
         PredictorModel = getattr(baseline, hyper_params.baseline).TrajectoryPredictor
         hook_func = DotDict({

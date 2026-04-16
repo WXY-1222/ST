@@ -25,6 +25,7 @@ def get_dataloader(
     world_size=1,
     seed=0,
     interaction_data_path="",
+    train_subset=0,
 ):
     r"""Get dataloader for a specific phase
 
@@ -51,6 +52,8 @@ def get_dataloader(
             split=phase,
             obs_len=obs_len,
             pred_len=pred_len,
+            max_samples=(int(train_subset) if phase == 'train' else 0),
+            sample_seed=seed,
         )
     else:
         data_set = os.path.join(data_dir, phase)
@@ -437,7 +440,7 @@ class InteractionTrajectoryDataset(Dataset):
       - each sample dict has trajectory (N, obs_len, >=2), future_trajectory (N, pred_len, 2)
     """
 
-    def __init__(self, data_path, split='train', obs_len=8, pred_len=12, threshold=0.02):
+    def __init__(self, data_path, split='train', obs_len=8, pred_len=12, threshold=0.02, max_samples=0, sample_seed=0):
         super(InteractionTrajectoryDataset, self).__init__()
         assert os.path.isfile(data_path), f"INTERACTION pkl not found: {data_path}"
 
@@ -466,7 +469,13 @@ class InteractionTrajectoryDataset(Dataset):
         self.homography = {}
         self.vector_field = {}
 
-        for sample in data[split_key]:
+        samples = list(data[split_key])
+        if int(max_samples) > 0 and len(samples) > int(max_samples):
+            rng = np.random.default_rng(int(sample_seed))
+            selected = np.sort(rng.permutation(len(samples))[:int(max_samples)])
+            samples = [samples[i] for i in selected]
+
+        for sample in samples:
             if "trajectory" not in sample or "future_trajectory" not in sample:
                 continue
 

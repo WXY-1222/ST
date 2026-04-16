@@ -413,12 +413,13 @@ class STSequencedMiniBatchTrainer(STTrainer):
         num_workers = int(getattr(args, "num_workers", 0))
         pin_memory = bool(getattr(args, "pin_memory", True))
         seed = int(getattr(args, "seed", 0))
+        train_subset = max(0, int(getattr(args, "train_subset", 0)))
         interaction_data_path = str(getattr(hyper_params, "interaction_data_path", "") or "")
         self.loader_train = get_dataloader(
             self.dataset_dir, 'train', obs_len, pred_len, batch_size=1, skip=skip,
             num_workers=num_workers, pin_memory=pin_memory, distributed=self.distributed,
             rank=self.rank, world_size=self.world_size, seed=seed,
-            interaction_data_path=interaction_data_path)
+            interaction_data_path=interaction_data_path, train_subset=train_subset)
         self.loader_val = get_dataloader(
             self.dataset_dir, 'val', obs_len, pred_len, batch_size=1,
             num_workers=num_workers, pin_memory=pin_memory, distributed=self.distributed,
@@ -479,9 +480,10 @@ class STSequencedMiniBatchTrainer(STTrainer):
         self.model.eval()
         loss_sum = 0.0
         num_ped = 0.0
+        eval_batches = max(0, int(getattr(self.args, "eval_batches", 0)))
 
         loader = self._progress(self.loader_val, desc=f'Valid Epoch {epoch}')
-        for batch in loader:
+        for batch_idx, batch in enumerate(loader, start=1):
             obs_traj, pred_traj = self._unpack_obs_pred_batch(batch)
             obs_traj = obs_traj.to(self.device, non_blocking=True)
             pred_traj = pred_traj.to(self.device, non_blocking=True)
@@ -490,6 +492,8 @@ class STSequencedMiniBatchTrainer(STTrainer):
             recon_loss = output["loss_euclidean_fde"] * obs_traj.size(0)
             loss_sum += float(recon_loss.item())
             num_ped += float(obs_traj.size(0))
+            if eval_batches > 0 and batch_idx >= eval_batches:
+                break
 
         global_loss_sum, global_num_ped = self._reduce_sum_count(loss_sum, num_ped)
         self.log['val_loss'].append(global_loss_sum / max(global_num_ped, 1e-12))
@@ -503,11 +507,12 @@ class STSequencedMiniBatchTrainer(STTrainer):
         desc = f"{split} {self.hyper_params.dataset.upper()} scene"
         eval_k = int(eval_k)
         miss_threshold = float(miss_threshold)
+        eval_batches = max(0, int(getattr(self.args, "eval_batches", 0)))
         minade_list, minfde_list, miss_list = [], [], []
         scene_minade_list, scene_minfde_list, scene_miss_list = [], [], []
 
         loader_iter = self._progress(eval_loader, desc=desc)
-        for batch in loader_iter:
+        for batch_idx, batch in enumerate(loader_iter, start=1):
             obs_traj, pred_traj = self._unpack_obs_pred_batch(batch)
             obs_traj = obs_traj.to(self.device, non_blocking=True)
             pred_traj = pred_traj.to(self.device, non_blocking=True)
@@ -524,6 +529,8 @@ class STSequencedMiniBatchTrainer(STTrainer):
             scene_minade_list.append(scene_minade)
             scene_minfde_list.append(scene_minfde)
             scene_miss_list.append(scene_miss)
+            if eval_batches > 0 and batch_idx >= eval_batches:
+                break
 
         return self._finalize_digir_metrics(
             minade_list,
@@ -549,12 +556,13 @@ class STCollatedMiniBatchTrainer(STTrainer):
         num_workers = int(getattr(args, "num_workers", 0))
         pin_memory = bool(getattr(args, "pin_memory", True))
         seed = int(getattr(args, "seed", 0))
+        train_subset = max(0, int(getattr(args, "train_subset", 0)))
         interaction_data_path = str(getattr(hyper_params, "interaction_data_path", "") or "")
         self.loader_train = get_dataloader(
             self.dataset_dir, 'train', obs_len, pred_len, batch_size=batch_size, skip=skip,
             num_workers=num_workers, pin_memory=pin_memory, distributed=self.distributed,
             rank=self.rank, world_size=self.world_size, seed=seed,
-            interaction_data_path=interaction_data_path)
+            interaction_data_path=interaction_data_path, train_subset=train_subset)
         self.loader_val = get_dataloader(
             self.dataset_dir, 'val', obs_len, pred_len, batch_size=batch_size,
             num_workers=num_workers, pin_memory=pin_memory, distributed=self.distributed,
@@ -604,9 +612,10 @@ class STCollatedMiniBatchTrainer(STTrainer):
         self.model.eval()
         loss_sum = 0.0
         num_ped = 0.0
+        eval_batches = max(0, int(getattr(self.args, "eval_batches", 0)))
 
         loader = self._progress(self.loader_val, desc=f'Valid Epoch {epoch}')
-        for batch in loader:
+        for batch_idx, batch in enumerate(loader, start=1):
             obs_traj, pred_traj = self._unpack_obs_pred_batch(batch)
             obs_traj = obs_traj.to(self.device, non_blocking=True)
             pred_traj = pred_traj.to(self.device, non_blocking=True)
@@ -616,6 +625,8 @@ class STCollatedMiniBatchTrainer(STTrainer):
             recon_loss = output["loss_euclidean_fde"] * obs_traj.size(0)
             loss_sum += float(recon_loss.item())
             num_ped += float(obs_traj.size(0))
+            if eval_batches > 0 and batch_idx >= eval_batches:
+                break
 
         global_loss_sum, global_num_ped = self._reduce_sum_count(loss_sum, num_ped)
         self.log['val_loss'].append(global_loss_sum / max(global_num_ped, 1e-12))
@@ -629,11 +640,12 @@ class STCollatedMiniBatchTrainer(STTrainer):
         desc = f"{split} {self.hyper_params.dataset.upper()} scene"
         eval_k = int(eval_k)
         miss_threshold = float(miss_threshold)
+        eval_batches = max(0, int(getattr(self.args, "eval_batches", 0)))
         minade_list, minfde_list, miss_list = [], [], []
         scene_minade_list, scene_minfde_list, scene_miss_list = [], [], []
 
         loader_iter = self._progress(eval_loader, desc=desc)
-        for batch in loader_iter:
+        for batch_idx, batch in enumerate(loader_iter, start=1):
             obs_traj, pred_traj = self._unpack_obs_pred_batch(batch)
             obs_traj = obs_traj.to(self.device, non_blocking=True)
             pred_traj = pred_traj.to(self.device, non_blocking=True)
@@ -650,6 +662,8 @@ class STCollatedMiniBatchTrainer(STTrainer):
             scene_minade_list.append(scene_minade)
             scene_minfde_list.append(scene_minfde)
             scene_miss_list.append(scene_miss)
+            if eval_batches > 0 and batch_idx >= eval_batches:
+                break
 
         return self._finalize_digir_metrics(
             minade_list,
@@ -734,12 +748,13 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
         self.model.eval()
         loss_sum = 0.0
         num_ped = 0.0
+        eval_batches = max(0, int(getattr(self.args, "eval_batches", 0)))
 
         if self.loader_val.dataset.anchor is None:
             self.init_adaptive_anchor(self.loader_val.dataset)
 
         loader = self._progress(self.loader_val, desc=f'Valid Epoch {epoch}')
-        for batch in loader:
+        for batch_idx, batch in enumerate(loader, start=1):
             obs_traj = batch["obs_traj"].to(self.device, non_blocking=True)
             pred_traj = batch["pred_traj"].to(self.device, non_blocking=True)
             adaptive_anchor = batch["anchor"].to(self.device, non_blocking=True)
@@ -751,6 +766,8 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
             recon_loss = output["loss_euclidean_fde"] * obs_traj.size(0)
             loss_sum += float(recon_loss.item())
             num_ped += float(obs_traj.size(0))
+            if eval_batches > 0 and batch_idx >= eval_batches:
+                break
 
         global_loss_sum, global_num_ped = self._reduce_sum_count(loss_sum, num_ped)
         self.log['val_loss'].append(global_loss_sum / max(global_num_ped, 1e-12))
@@ -764,6 +781,7 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
         desc = f"{split} {self.hyper_params.dataset.upper()} scene"
         eval_k = int(eval_k)
         miss_threshold = float(miss_threshold)
+        eval_batches = max(0, int(getattr(self.args, "eval_batches", 0)))
         minade_list, minfde_list, miss_list = [], [], []
         scene_minade_list, scene_minfde_list, scene_miss_list = [], [], []
 
@@ -771,7 +789,7 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
             self.init_adaptive_anchor(eval_loader.dataset)
 
         loader_iter = self._progress(eval_loader, desc=desc)
-        for batch in loader_iter:
+        for batch_idx, batch in enumerate(loader_iter, start=1):
             obs_traj = batch["obs_traj"].to(self.device, non_blocking=True)
             pred_traj = batch["pred_traj"].to(self.device, non_blocking=True)
             adaptive_anchor = batch["anchor"].to(self.device, non_blocking=True)
@@ -790,6 +808,8 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
             scene_minade_list.append(scene_minade)
             scene_minfde_list.append(scene_minfde)
             scene_miss_list.append(scene_miss)
+            if eval_batches > 0 and batch_idx >= eval_batches:
+                break
 
         return self._finalize_digir_metrics(
             minade_list,

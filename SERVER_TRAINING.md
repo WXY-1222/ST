@@ -58,14 +58,22 @@ cd /path/to/SingularTrajectory-main
 
 torchrun --standalone --nproc_per_node=8 trainval.py \
   --cfg ./config/interaction/singulartrajectory-transformerdiffusion-interaction.json \
-  --tag ST-interaction-k3 \
+  --tag ST-interaction-k5-common \
   --dataset_dir /data/sdb/bitwxy/st_data \
   --checkpoint_dir /data/sdb/bitwxy/st_checkpoints \
   --dist_backend nccl \
   --num_workers 4 \
   --pin_memory \
+  --seed 42 \
+  --epochs 20 \
+  --batch_size 8 \
+  --lr 1e-4 \
+  --weight_decay 1e-4 \
+  --train_subset 5000 \
+  --eval_batches 0 \
   --eval_every 4 \
-  --eval_k 3 \
+  --eval_k 5 \
+  --num_samples 5 \
   --best_metric minADE_k \
   --nan_fill nan \
   --miss_threshold 2.0
