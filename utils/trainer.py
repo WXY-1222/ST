@@ -73,9 +73,26 @@ class STTrainer:
     def _broadcast_model_state(self):
         if not (self.distributed and dist.is_available() and dist.is_initialized()):
             return
-        for value in self.unwrap_model().state_dict().values():
-            if torch.is_tensor(value):
-                dist.broadcast(value, src=0)
+        backend = dist.get_backend()
+        with torch.no_grad():
+            for value in self.unwrap_model().state_dict().values():
+                if not torch.is_tensor(value):
+                    continue
+
+                # torch.distributed.broadcast requires contiguous tensors.
+                tensor_to_broadcast = value if value.is_contiguous() else value.contiguous()
+
+                # NCCL only supports CUDA tensors.
+                moved_to_cuda = False
+                if backend == "nccl" and not tensor_to_broadcast.is_cuda:
+                    tensor_to_broadcast = tensor_to_broadcast.to(self.device)
+                    moved_to_cuda = True
+
+                dist.broadcast(tensor_to_broadcast, src=0)
+
+                needs_copy_back = (tensor_to_broadcast.data_ptr() != value.data_ptr()) or moved_to_cuda
+                if needs_copy_back:
+                    value.copy_(tensor_to_broadcast.to(device=value.device, dtype=value.dtype))
 
     def _sync_loader_epoch(self, loader, epoch):
         if loader is None:
