@@ -93,10 +93,21 @@ class AdaptiveAnchor(nn.Module):
 
         n_ped = obs_traj.size(0)
         V_trunc = space.V_trunc
-        
-        space.traj_normalizer.calculate_params(obs_traj.cuda().detach())
+        device = self.C_anchor.device
+        obs_traj = obs_traj.to(device).detach()
+
+        space.traj_normalizer.calculate_params(obs_traj)
         init_anchor = self.C_anchor.unsqueeze(dim=0).repeat_interleave(repeats=n_ped, dim=0).detach()
         init_anchor = init_anchor.permute(2, 1, 0)
+
+        # INTERACTION baseline path: if map assets are unavailable, use the initial anchors directly.
+        has_map_assets = isinstance(vector_field, dict) and isinstance(homography, dict) and len(vector_field) > 0 and len(homography) > 0
+        if has_map_assets:
+            unique_scene = np.unique(scene_id)
+            has_map_assets = all((name in vector_field) and (name in homography) for name in unique_scene)
+        if not has_map_assets:
+            return init_anchor.permute(2, 1, 0).cpu()
+
         init_anchor_euclidean = space.batch_to_Euclidean_space(init_anchor, evec=V_trunc)
         init_anchor_euclidean = space.traj_normalizer.denormalize(init_anchor_euclidean).cpu().numpy()
         adaptive_anchor_euclidean = init_anchor_euclidean.copy()
@@ -104,6 +115,8 @@ class AdaptiveAnchor(nn.Module):
         
         for ped_id in range(n_ped):
             scene_name = scene_id[ped_id]
+            if (scene_name not in vector_field) or (scene_name not in homography):
+                continue
             prototype_image = world2image(init_anchor_euclidean[:, ped_id], homography[scene_name])
             startpoint_image = world2image(obs_traj[ped_id], homography[scene_name])[-1]
             endpoint_image = prototype_image[:, -1, :]
@@ -122,7 +135,7 @@ class AdaptiveAnchor(nn.Module):
             prototype_world = image2world(prototype_image, homography[scene_name])
             adaptive_anchor_euclidean[:, ped_id] = prototype_world
         
-        adaptive_anchor_euclidean = space.traj_normalizer.normalize(torch.FloatTensor(adaptive_anchor_euclidean).cuda())
+        adaptive_anchor_euclidean = space.traj_normalizer.normalize(torch.FloatTensor(adaptive_anchor_euclidean).to(device))
         adaptive_anchor = space.batch_to_Singular_space(adaptive_anchor_euclidean, evec=V_trunc)
         adaptive_anchor = adaptive_anchor.permute(2, 1, 0).cpu()
         # If you don't want to use an image, return `init_anchor`.

@@ -1,5 +1,6 @@
 import os
 import math
+import pickle
 import torch
 import numpy as np
 from torch.utils.data import Dataset
@@ -23,6 +24,7 @@ def get_dataloader(
     rank=0,
     world_size=1,
     seed=0,
+    interaction_data_path="",
 ):
     r"""Get dataloader for a specific phase
 
@@ -39,11 +41,20 @@ def get_dataloader(
 
     assert phase in ['train', 'val', 'test']
 
-    data_set = os.path.join(data_dir, phase)
     shuffle = True if phase == 'train' else False
     drop_last = True if phase == 'train' else False
 
-    dataset_phase = TrajectoryDataset(data_set, obs_len=obs_len, pred_len=pred_len, skip=skip)
+    dataset_phase = None
+    if interaction_data_path:
+        dataset_phase = InteractionTrajectoryDataset(
+            interaction_data_path,
+            split=phase,
+            obs_len=obs_len,
+            pred_len=pred_len,
+        )
+    else:
+        data_set = os.path.join(data_dir, phase)
+        dataset_phase = TrajectoryDataset(data_set, obs_len=obs_len, pred_len=pred_len, skip=skip)
     sampler_phase = None
     batch_sampler_phase = None
     if batch_size > 1:
@@ -382,6 +393,111 @@ class TrajectoryDataset(Dataset):
                     seq_list.append(curr_seq[:num_peds_considered])
                     frame_list.extend([frames[idx]] * num_peds_considered)
                     scene_id.extend([scene_name] * num_peds_considered)
+
+        self.num_seq = len(seq_list)
+        seq_list = np.concatenate(seq_list, axis=0)
+        loss_mask_list = np.concatenate(loss_mask_list, axis=0)
+        non_linear_ped = np.asarray(non_linear_ped)
+        self.num_peds_in_seq = np.array(num_peds_in_seq)
+        self.frame_list = np.array(frame_list, dtype=np.int32)
+        self.scene_id = np.array(scene_id)
+
+        # Convert numpy -> Torch Tensor
+        self.obs_traj = torch.from_numpy(seq_list[:, :, :self.obs_len]).type(torch.float).permute(0, 2, 1)  # NTC
+        self.pred_traj = torch.from_numpy(seq_list[:, :, self.obs_len:]).type(torch.float).permute(0, 2, 1)  # NTC
+        self.loss_mask = torch.from_numpy(loss_mask_list).type(torch.float).gt(0.5)
+        self.non_linear_ped = torch.from_numpy(non_linear_ped).type(torch.float).gt(0.5)
+        cum_start_idx = [0] + np.cumsum(num_peds_in_seq).tolist()
+        self.seq_start_end = [(start, end) for start, end in zip(cum_start_idx, cum_start_idx[1:])]
+        self.frame_list = torch.from_numpy(self.frame_list).type(torch.long)
+        self.anchor = None
+
+    def __len__(self):
+        return self.num_seq
+
+    def __getitem__(self, index):
+        start, end = self.seq_start_end[index]
+        out = {"obs_traj": self.obs_traj[start:end],
+               "pred_traj": self.pred_traj[start:end],
+               "anchor": self.anchor[start:end],
+               "non_linear_ped": self.non_linear_ped[start:end],
+               "loss_mask": self.loss_mask[start:end],
+               "scene_mask": None,
+               "seq_start_end": [[0, end - start]],
+               "frame": self.frame_list[start:end],
+               "scene_id": self.scene_id[start:end]}
+        return out
+
+
+class InteractionTrajectoryDataset(Dataset):
+    r"""Dataloader for INTERACTION trajectory pkl prepared for DIGIR.
+
+    Expected pickle fields:
+      - train/val/(optional test): list[dict]
+      - each sample dict has trajectory (N, obs_len, >=2), future_trajectory (N, pred_len, 2)
+    """
+
+    def __init__(self, data_path, split='train', obs_len=8, pred_len=12, threshold=0.02):
+        super(InteractionTrajectoryDataset, self).__init__()
+        assert os.path.isfile(data_path), f"INTERACTION pkl not found: {data_path}"
+
+        with open(data_path, 'rb') as fp:
+            data = pickle.load(fp)
+
+        split_key = split
+        if split_key not in data:
+            if split == 'test' and 'val' in data:
+                split_key = 'val'
+            else:
+                raise KeyError(f"Split `{split}` not found in {data_path}. Available keys: {list(data.keys())}")
+
+        self.data_path = data_path
+        self.obs_len = obs_len
+        self.pred_len = pred_len
+        self.seq_len = obs_len + pred_len
+
+        num_peds_in_seq = []
+        seq_list = []
+        loss_mask_list = []
+        non_linear_ped = []
+        frame_list = []
+        scene_id = []
+        self.homography = {}
+        self.vector_field = {}
+
+        for sample in data[split_key]:
+            if "trajectory" not in sample or "future_trajectory" not in sample:
+                continue
+
+            traj_hist = np.asarray(sample["trajectory"], dtype=np.float32)
+            traj_fut = np.asarray(sample["future_trajectory"], dtype=np.float32)
+            if traj_hist.ndim != 3 or traj_fut.ndim != 3:
+                continue
+
+            n_ped = int(sample.get("num_vehicles", min(traj_hist.shape[0], traj_fut.shape[0])))
+            n_ped = max(0, min(n_ped, traj_hist.shape[0], traj_fut.shape[0]))
+            if n_ped <= 0:
+                continue
+            if traj_hist.shape[1] < obs_len or traj_fut.shape[1] < pred_len:
+                continue
+
+            obs_seq = traj_hist[:n_ped, :obs_len, :2]
+            pred_seq = traj_fut[:n_ped, :pred_len, :2]
+            full_seq = np.concatenate([obs_seq, pred_seq], axis=1)
+
+            seq_list.append(np.concatenate([obs_seq.transpose(0, 2, 1), pred_seq.transpose(0, 2, 1)], axis=2))
+            loss_mask_list.append(np.ones((n_ped, self.seq_len), dtype=np.float32))
+            num_peds_in_seq.append(n_ped)
+
+            for ped_idx in range(n_ped):
+                non_linear_ped.append(poly_fit(full_seq[ped_idx].T, pred_len, threshold))
+
+            start_frame = int(sample.get("start_frame", 0))
+            frame_list.extend([start_frame] * n_ped)
+            location_name = str(sample.get("location_name", "interaction"))
+            scene_id.extend([location_name] * n_ped)
+
+        assert len(seq_list) > 0, f"No valid samples found in INTERACTION split `{split_key}` ({data_path})"
 
         self.num_seq = len(seq_list)
         seq_list = np.concatenate(seq_list, axis=0)

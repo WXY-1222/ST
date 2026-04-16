@@ -295,18 +295,22 @@ class STSequencedMiniBatchTrainer(STTrainer):
         num_workers = int(getattr(args, "num_workers", 0))
         pin_memory = bool(getattr(args, "pin_memory", True))
         seed = int(getattr(args, "seed", 0))
+        interaction_data_path = str(getattr(hyper_params, "interaction_data_path", "") or "")
         self.loader_train = get_dataloader(
             self.dataset_dir, 'train', obs_len, pred_len, batch_size=1, skip=skip,
             num_workers=num_workers, pin_memory=pin_memory, distributed=self.distributed,
-            rank=self.rank, world_size=self.world_size, seed=seed)
+            rank=self.rank, world_size=self.world_size, seed=seed,
+            interaction_data_path=interaction_data_path)
         self.loader_val = get_dataloader(
             self.dataset_dir, 'val', obs_len, pred_len, batch_size=1,
             num_workers=num_workers, pin_memory=pin_memory, distributed=self.distributed,
-            rank=self.rank, world_size=self.world_size, seed=seed)
+            rank=self.rank, world_size=self.world_size, seed=seed,
+            interaction_data_path=interaction_data_path)
         self.loader_test = get_dataloader(
             self.dataset_dir, 'test', obs_len, pred_len, batch_size=1,
             num_workers=num_workers, pin_memory=pin_memory, distributed=self.distributed,
-            rank=self.rank, world_size=self.world_size, seed=seed)
+            rank=self.rank, world_size=self.world_size, seed=seed,
+            interaction_data_path=interaction_data_path)
 
     def train(self, epoch):
         self.model.train()
@@ -403,18 +407,22 @@ class STCollatedMiniBatchTrainer(STTrainer):
         num_workers = int(getattr(args, "num_workers", 0))
         pin_memory = bool(getattr(args, "pin_memory", True))
         seed = int(getattr(args, "seed", 0))
+        interaction_data_path = str(getattr(hyper_params, "interaction_data_path", "") or "")
         self.loader_train = get_dataloader(
             self.dataset_dir, 'train', obs_len, pred_len, batch_size=batch_size, skip=skip,
             num_workers=num_workers, pin_memory=pin_memory, distributed=self.distributed,
-            rank=self.rank, world_size=self.world_size, seed=seed)
+            rank=self.rank, world_size=self.world_size, seed=seed,
+            interaction_data_path=interaction_data_path)
         self.loader_val = get_dataloader(
             self.dataset_dir, 'val', obs_len, pred_len, batch_size=batch_size,
             num_workers=num_workers, pin_memory=pin_memory, distributed=self.distributed,
-            rank=self.rank, world_size=self.world_size, seed=seed)
+            rank=self.rank, world_size=self.world_size, seed=seed,
+            interaction_data_path=interaction_data_path)
         self.loader_test = get_dataloader(
             self.dataset_dir, 'test', obs_len, pred_len, batch_size=1,
             num_workers=num_workers, pin_memory=pin_memory, distributed=self.distributed,
-            rank=self.rank, world_size=self.world_size, seed=seed)
+            rank=self.rank, world_size=self.world_size, seed=seed,
+            interaction_data_path=interaction_data_path)
 
     def train(self, epoch):
         self.model.train()

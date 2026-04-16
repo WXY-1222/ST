@@ -86,6 +86,10 @@ python trainval.py --cfg ./config/{task}/singulartrajectory-transformerdiffusion
 For multi-GPU server training (e.g., `torchrun` on 8xA100), see:
 - `SERVER_TRAINING.md`
 
+For INTERACTION baseline training (DIGIR comparison), see:
+- `config/interaction/singulartrajectory-transformerdiffusion-interaction.json`
+- `SERVER_TRAINING.md` (INTERACTION section)
+
 <br>
 
 ## Model Evaluation

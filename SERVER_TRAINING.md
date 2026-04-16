@@ -48,3 +48,27 @@ bash ./script/train_torchrun.sh -n 8 -N 2 -R 1 -A 10.0.0.1 -P 29500 -c <cfg> -t 
   - `python trainval.py --cfg <cfg> --tag <tag> --gpu_id 0`
 - In DDP mode, `--gpu_id` is ignored and GPU selection should be handled by `torchrun`/environment.
 - Checkpoint saving and major logs are rank-0 only.
+
+## INTERACTION Baseline (for DIGIR comparison)
+
+Use the DIGIR preprocessed pkl directly:
+
+```bash
+cd /path/to/SingularTrajectory-main
+
+torchrun --standalone --nproc_per_node=8 trainval.py \
+  --cfg ./config/interaction/singulartrajectory-transformerdiffusion-interaction.json \
+  --tag ST-interaction-k3 \
+  --dataset_dir /data/sdb/bitwxy/st_data \
+  --checkpoint_dir /data/sdb/bitwxy/st_checkpoints \
+  --dist_backend nccl \
+  --num_workers 4 \
+  --pin_memory \
+  --eval_every 4 \
+  --eval_k 3 \
+  --miss_threshold 2.0
+```
+
+Notes:
+- `interaction_data_path` is read from the cfg file. Update it to your actual DIGIR pkl path when needed.
+- INTERACTION has no ETH/UCY-style homography/vectorfield in this pipeline, so ST uses initial anchors (no map-based anchor refinement).
