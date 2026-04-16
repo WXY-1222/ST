@@ -685,6 +685,7 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
                 device_ids=[self.local_rank],
                 output_device=self.local_rank,
                 find_unused_parameters=True,
+                broadcast_buffers=False,
             )
         else:
             self.model = eigentraj_model
