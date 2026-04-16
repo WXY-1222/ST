@@ -89,6 +89,7 @@ For multi-GPU server training (e.g., `torchrun` on 8xA100), see:
 For INTERACTION baseline training (DIGIR comparison), see:
 - `config/interaction/singulartrajectory-transformerdiffusion-interaction.json`
 - `SERVER_TRAINING.md` (INTERACTION section)
+- recommended runtime args: `--eval_every 4 --eval_k 3 --best_metric minADE_k`
 
 <br>
 

@@ -66,9 +66,12 @@ torchrun --standalone --nproc_per_node=8 trainval.py \
   --pin_memory \
   --eval_every 4 \
   --eval_k 3 \
+  --best_metric minADE_k \
+  --nan_fill nan \
   --miss_threshold 2.0
 ```
 
 Notes:
 - `interaction_data_path` is read from the cfg file. Update it to your actual DIGIR pkl path when needed.
 - INTERACTION has no ETH/UCY-style homography/vectorfield in this pipeline, so ST uses initial anchors (no map-based anchor refinement).
+- If your INTERACTION pkl has no `test` split, training still works (`train` + `val`), but `--test` mode now requires an explicit `test` split (no silent fallback to `val`).

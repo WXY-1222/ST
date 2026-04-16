@@ -446,10 +446,11 @@ class InteractionTrajectoryDataset(Dataset):
 
         split_key = split
         if split_key not in data:
-            if split == 'test' and 'val' in data:
-                split_key = 'val'
-            else:
-                raise KeyError(f"Split `{split}` not found in {data_path}. Available keys: {list(data.keys())}")
+            raise KeyError(
+                f"Split `{split}` not found in {data_path}. "
+                f"Available keys: {list(data.keys())}. "
+                "Please prepare an explicit split or update your config/command."
+            )
 
         self.data_path = data_path
         self.obs_len = obs_len

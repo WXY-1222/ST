@@ -44,6 +44,20 @@ if __name__ == '__main__':
     parser.add_argument('--eval_every', default=1, type=int, help="run metric evaluation every N epochs")
     parser.add_argument('--eval_k', default=5, type=int, help="K used for minADE_K/minFDE_K")
     parser.add_argument('--miss_threshold', default=2.0, type=float, help="MissRate threshold in meters")
+    parser.add_argument(
+        '--best_metric',
+        default="val_loss",
+        choices=["val_loss", "minADE_k"],
+        type=str,
+        help="checkpoint selection metric: validation loss or minADE_K on eval split",
+    )
+    parser.add_argument(
+        '--nan_fill',
+        default="nan",
+        choices=["nan", "zero"],
+        type=str,
+        help="fill value for unsupported DIGIR-style fields",
+    )
     args = parser.parse_args()
 
     # Respect single-process GPU selection while keeping torchrun behavior unchanged.
@@ -102,7 +116,11 @@ if __name__ == '__main__':
             model_trainer.fit()
         else:
             model_trainer.load_model()
-            results = model_trainer.test()
+            results = model_trainer.test(
+                eval_k=args.eval_k,
+                miss_threshold=args.miss_threshold,
+                nan_fill=args.nan_fill,
+            )
             if args.is_main:
                 print("Testing...", end=' ')
                 print(f"Scene: {hyper_params.dataset}", *[f"{meter}: {value:.8f}" for meter, value in results.items()])

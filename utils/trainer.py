@@ -126,6 +126,31 @@ class STTrainer:
         )
 
     @staticmethod
+    def _compute_scene_batch_metrics(minade, minfde, miss, scene_id):
+        scene_id = np.asarray(scene_id)
+        if scene_id.ndim > 1:
+            scene_id = scene_id.reshape(-1)
+
+        if scene_id.shape[0] != minade.shape[0]:
+            scene_id = np.array(["scene"] * int(minade.shape[0]), dtype=object)
+
+        unique_scene = np.unique(scene_id)
+        scene_minade, scene_minfde, scene_miss = [], [], []
+        for sid in unique_scene:
+            mask = (scene_id == sid)
+            if not np.any(mask):
+                continue
+            scene_minade.append(float(minade[mask].mean()))
+            scene_minfde.append(float(minfde[mask].mean()))
+            scene_miss.append(float(miss[mask].mean()))
+
+        return (
+            np.asarray(scene_minade, dtype=np.float32),
+            np.asarray(scene_minfde, dtype=np.float32),
+            np.asarray(scene_miss, dtype=np.float32),
+        )
+
+    @staticmethod
     def _merge_numpy_arrays(local_arrays):
         if len(local_arrays) == 0:
             return np.array([], dtype=np.float32)
@@ -141,34 +166,66 @@ class STTrainer:
             return np.concatenate(valid, axis=0)
         return local_array
 
-    def _finalize_digir_metrics(self, minade_list, minfde_list, miss_list, eval_k=5):
+    @staticmethod
+    def _placeholder_metric_value(nan_fill):
+        return 0.0 if str(nan_fill).lower() == "zero" else float('nan')
+
+    def _finalize_digir_metrics(
+        self,
+        minade_list,
+        minfde_list,
+        miss_list,
+        scene_minade_list=None,
+        scene_minfde_list=None,
+        scene_miss_list=None,
+        eval_k=5,
+        nan_fill="nan",
+    ):
         minade_local = self._merge_numpy_arrays(minade_list)
         minfde_local = self._merge_numpy_arrays(minfde_list)
         miss_local = self._merge_numpy_arrays(miss_list)
+        scene_minade_local = self._merge_numpy_arrays(scene_minade_list or [])
+        scene_minfde_local = self._merge_numpy_arrays(scene_minfde_list or [])
+        scene_miss_local = self._merge_numpy_arrays(scene_miss_list or [])
 
         minade_all = self._gather_numpy_array(minade_local)
         minfde_all = self._gather_numpy_array(minfde_local)
         miss_all = self._gather_numpy_array(miss_local)
+        scene_minade_all = self._gather_numpy_array(scene_minade_local)
+        scene_minfde_all = self._gather_numpy_array(scene_minfde_local)
+        scene_miss_all = self._gather_numpy_array(scene_miss_local)
+
+        placeholder = self._placeholder_metric_value(nan_fill)
 
         if minade_all.size == 0 or minfde_all.size == 0 or miss_all.size == 0:
             return {
                 f"minADE_{int(eval_k)}": float('nan'),
                 f"minFDE_{int(eval_k)}": float('nan'),
                 "MissRate": float('nan'),
-                "IntentAcc": float('nan'),
-                "ITC": float('nan'),
-                "CollisionRate": float('nan'),
-                "OffRoadRate": float('nan'),
+                f"scene_minADE_{int(eval_k)}": float('nan'),
+                f"scene_minFDE_{int(eval_k)}": float('nan'),
+                "scene_MissRate": float('nan'),
+                "IntentAcc": placeholder,
+                "ITC": placeholder,
+                "CollisionRate": placeholder,
+                "OffRoadRate": placeholder,
             }
+
+        scene_minade_value = float(scene_minade_all.mean()) if scene_minade_all.size > 0 else float('nan')
+        scene_minfde_value = float(scene_minfde_all.mean()) if scene_minfde_all.size > 0 else float('nan')
+        scene_miss_value = float(scene_miss_all.mean()) if scene_miss_all.size > 0 else float('nan')
 
         return {
             f"minADE_{int(eval_k)}": float(minade_all.mean()),
             f"minFDE_{int(eval_k)}": float(minfde_all.mean()),
             "MissRate": float(miss_all.mean()),
-            "IntentAcc": float('nan'),
-            "ITC": float('nan'),
-            "CollisionRate": float('nan'),
-            "OffRoadRate": float('nan'),
+            f"scene_minADE_{int(eval_k)}": scene_minade_value,
+            f"scene_minFDE_{int(eval_k)}": scene_minfde_value,
+            "scene_MissRate": scene_miss_value,
+            "IntentAcc": placeholder,
+            "ITC": placeholder,
+            "CollisionRate": placeholder,
+            "OffRoadRate": placeholder,
         }
 
     @staticmethod
@@ -176,6 +233,12 @@ class STTrainer:
         if isinstance(batch, dict):
             return batch["obs_traj"], batch["pred_traj"]
         return batch[:2]
+
+    @staticmethod
+    def _extract_scene_id(batch, num_agents):
+        if isinstance(batch, dict) and "scene_id" in batch:
+            return batch["scene_id"]
+        return np.array(["scene"] * int(num_agents), dtype=object)
 
     def init_descriptor(self):
         # Singular space initialization
@@ -208,16 +271,22 @@ class STTrainer:
         raise NotImplementedError
 
     @torch.no_grad()
-    def test(self, loader=None, split="Test", eval_k=5, miss_threshold=2.0):
+    def test(self, loader=None, split="Test", eval_k=5, miss_threshold=2.0, nan_fill="nan"):
         raise NotImplementedError
 
     def fit(self):
         if self.is_main:
             print("Training started...")
-        best_val = float('inf')
+        best_metric = str(getattr(self.args, "best_metric", "val_loss"))
+        if best_metric not in {"val_loss", "minADE_k"}:
+            raise ValueError(f"Unsupported best metric `{best_metric}`")
+
+        best_score = float('inf')
+        best_epoch = -1
         eval_every = max(1, int(getattr(self.args, "eval_every", 1)))
         eval_k = int(getattr(self.args, "eval_k", 5))
         miss_threshold = float(getattr(self.args, "miss_threshold", 2.0))
+        nan_fill = str(getattr(self.args, "nan_fill", "nan"))
 
         for epoch in range(self.hyper_params.num_epochs):
             self._set_epoch(epoch)
@@ -228,16 +297,18 @@ class STTrainer:
                 self.scheduler.step()
 
             current_val = self.log['val_loss'][-1]
-            if current_val < best_val:
-                best_val = current_val
+            if best_metric == "val_loss" and current_val < best_score:
+                best_score = current_val
+                best_epoch = epoch
                 self.save_model()
 
             if self.is_main:
                 print(" ")
                 print("Dataset: {0}, Epoch: {1}".format(self.hyper_params.dataset, epoch))
                 print("Train_loss: {0:.8f}, Val_los: {1:.8f}".format(self.log['train_loss'][-1], current_val))
-                print("Min_val_epoch: {0}, Min_val_loss: {1:.8f}".format(np.array(self.log['val_loss']).argmin(),
-                                                                         np.array(self.log['val_loss']).min()))
+                min_val_epoch = int(np.array(self.log['val_loss']).argmin())
+                min_val_loss = float(np.array(self.log['val_loss']).min())
+                print("Min_val_epoch: {0}, Min_val_loss: {1:.8f}".format(min_val_epoch, min_val_loss))
             should_eval = ((epoch + 1) % eval_every == 0) or (epoch + 1 == self.hyper_params.num_epochs)
             if should_eval:
                 eval_results = self.test(
@@ -245,19 +316,42 @@ class STTrainer:
                     split="Eval",
                     eval_k=eval_k,
                     miss_threshold=miss_threshold,
+                    nan_fill=nan_fill,
                 )
+                eval_metric_name = f"minADE_{eval_k}"
+                eval_metric_value = float(eval_results.get(eval_metric_name, float('nan')))
+                if best_metric == "minADE_k" and np.isfinite(eval_metric_value) and eval_metric_value < best_score:
+                    best_score = eval_metric_value
+                    best_epoch = epoch
+                    self.save_model()
                 if self.is_main:
                     print("Eval metrics:")
                     print(f"  minADE_{eval_k}: {eval_results[f'minADE_{eval_k}']:.6f}")
                     print(f"  minFDE_{eval_k}: {eval_results[f'minFDE_{eval_k}']:.6f}")
                     print(f"  MissRate: {eval_results['MissRate']:.2%}")
+                    print(f"  scene_minADE_{eval_k}: {eval_results[f'scene_minADE_{eval_k}']:.6f}")
+                    print(f"  scene_minFDE_{eval_k}: {eval_results[f'scene_minFDE_{eval_k}']:.6f}")
+                    print(f"  scene_MissRate: {eval_results['scene_MissRate']:.2%}")
                     print("  IntentAcc: N/A (ST dataset has no intent labels)")
                     print("  ITC: N/A (ST dataset has no intent labels)")
                     print("  CollisionRate: N/A (not defined in ST evaluator)")
                     print("  OffRoadRate: N/A (no map/off-road labels in ST pipeline)")
+                    if best_metric == "minADE_k":
+                        print(f"  Best selection metric: {eval_metric_name} (lower is better)")
+
+            if self.is_main and best_epoch >= 0:
+                if best_metric == "val_loss":
+                    print(f"Best checkpoint by val_loss -> epoch: {best_epoch}, score: {best_score:.8f}")
+                else:
+                    print(f"Best checkpoint by minADE_{eval_k} -> epoch: {best_epoch}, score: {best_score:.8f}")
             if self.is_main:
                 print(" ")
             self.barrier()
+
+        if best_epoch < 0:
+            if self.is_main:
+                print("Warning: no finite checkpoint selection metric observed; saving last model as model_best.pth.")
+            self.save_model()
 
         if self.is_main:
             print("Done.")
@@ -306,11 +400,18 @@ class STSequencedMiniBatchTrainer(STTrainer):
             num_workers=num_workers, pin_memory=pin_memory, distributed=self.distributed,
             rank=self.rank, world_size=self.world_size, seed=seed,
             interaction_data_path=interaction_data_path)
-        self.loader_test = get_dataloader(
-            self.dataset_dir, 'test', obs_len, pred_len, batch_size=1,
-            num_workers=num_workers, pin_memory=pin_memory, distributed=self.distributed,
-            rank=self.rank, world_size=self.world_size, seed=seed,
-            interaction_data_path=interaction_data_path)
+        self.loader_test = None
+        try:
+            self.loader_test = get_dataloader(
+                self.dataset_dir, 'test', obs_len, pred_len, batch_size=1,
+                num_workers=num_workers, pin_memory=pin_memory, distributed=self.distributed,
+                rank=self.rank, world_size=self.world_size, seed=seed,
+                interaction_data_path=interaction_data_path)
+        except KeyError:
+            if bool(getattr(args, "test", False)):
+                raise
+            if self.is_main:
+                print("Warning: test split not found; training continues without loader_test.")
 
     def train(self, epoch):
         self.model.train()
@@ -370,13 +471,16 @@ class STSequencedMiniBatchTrainer(STTrainer):
         self.log['val_loss'].append(global_loss_sum / max(global_num_ped, 1e-12))
 
     @torch.no_grad()
-    def test(self, loader=None, split="Test", eval_k=5, miss_threshold=2.0):
+    def test(self, loader=None, split="Test", eval_k=5, miss_threshold=2.0, nan_fill="nan"):
         self.model.eval()
         eval_loader = self.loader_test if loader is None else loader
+        if eval_loader is None:
+            raise RuntimeError("Test loader is unavailable. Provide `loader` explicitly or prepare test split.")
         desc = f"{split} {self.hyper_params.dataset.upper()} scene"
         eval_k = int(eval_k)
         miss_threshold = float(miss_threshold)
         minade_list, minfde_list, miss_list = [], [], []
+        scene_minade_list, scene_minfde_list, scene_miss_list = [], [], []
 
         loader_iter = self._progress(eval_loader, desc=desc)
         for batch in loader_iter:
@@ -391,8 +495,22 @@ class STSequencedMiniBatchTrainer(STTrainer):
             minade_list.append(minade)
             minfde_list.append(minfde)
             miss_list.append(miss)
+            scene_id = self._extract_scene_id(batch, minade.shape[0])
+            scene_minade, scene_minfde, scene_miss = self._compute_scene_batch_metrics(minade, minfde, miss, scene_id)
+            scene_minade_list.append(scene_minade)
+            scene_minfde_list.append(scene_minfde)
+            scene_miss_list.append(scene_miss)
 
-        return self._finalize_digir_metrics(minade_list, minfde_list, miss_list, eval_k=eval_k)
+        return self._finalize_digir_metrics(
+            minade_list,
+            minfde_list,
+            miss_list,
+            scene_minade_list=scene_minade_list,
+            scene_minfde_list=scene_minfde_list,
+            scene_miss_list=scene_miss_list,
+            eval_k=eval_k,
+            nan_fill=nan_fill,
+        )
 
 
 class STCollatedMiniBatchTrainer(STTrainer):
@@ -418,11 +536,18 @@ class STCollatedMiniBatchTrainer(STTrainer):
             num_workers=num_workers, pin_memory=pin_memory, distributed=self.distributed,
             rank=self.rank, world_size=self.world_size, seed=seed,
             interaction_data_path=interaction_data_path)
-        self.loader_test = get_dataloader(
-            self.dataset_dir, 'test', obs_len, pred_len, batch_size=1,
-            num_workers=num_workers, pin_memory=pin_memory, distributed=self.distributed,
-            rank=self.rank, world_size=self.world_size, seed=seed,
-            interaction_data_path=interaction_data_path)
+        self.loader_test = None
+        try:
+            self.loader_test = get_dataloader(
+                self.dataset_dir, 'test', obs_len, pred_len, batch_size=1,
+                num_workers=num_workers, pin_memory=pin_memory, distributed=self.distributed,
+                rank=self.rank, world_size=self.world_size, seed=seed,
+                interaction_data_path=interaction_data_path)
+        except KeyError:
+            if bool(getattr(args, "test", False)):
+                raise
+            if self.is_main:
+                print("Warning: test split not found; training continues without loader_test.")
 
     def train(self, epoch):
         self.model.train()
@@ -472,13 +597,16 @@ class STCollatedMiniBatchTrainer(STTrainer):
         self.log['val_loss'].append(global_loss_sum / max(global_num_ped, 1e-12))
 
     @torch.no_grad()
-    def test(self, loader=None, split="Test", eval_k=5, miss_threshold=2.0):
+    def test(self, loader=None, split="Test", eval_k=5, miss_threshold=2.0, nan_fill="nan"):
         self.model.eval()
         eval_loader = self.loader_test if loader is None else loader
+        if eval_loader is None:
+            raise RuntimeError("Test loader is unavailable. Provide `loader` explicitly or prepare test split.")
         desc = f"{split} {self.hyper_params.dataset.upper()} scene"
         eval_k = int(eval_k)
         miss_threshold = float(miss_threshold)
         minade_list, minfde_list, miss_list = [], [], []
+        scene_minade_list, scene_minfde_list, scene_miss_list = [], [], []
 
         loader_iter = self._progress(eval_loader, desc=desc)
         for batch in loader_iter:
@@ -493,8 +621,22 @@ class STCollatedMiniBatchTrainer(STTrainer):
             minade_list.append(minade)
             minfde_list.append(minfde)
             miss_list.append(miss)
+            scene_id = self._extract_scene_id(batch, minade.shape[0])
+            scene_minade, scene_minfde, scene_miss = self._compute_scene_batch_metrics(minade, minfde, miss, scene_id)
+            scene_minade_list.append(scene_minade)
+            scene_minfde_list.append(scene_minfde)
+            scene_miss_list.append(scene_miss)
 
-        return self._finalize_digir_metrics(minade_list, minfde_list, miss_list, eval_k=eval_k)
+        return self._finalize_digir_metrics(
+            minade_list,
+            minfde_list,
+            miss_list,
+            scene_minade_list=scene_minade_list,
+            scene_minfde_list=scene_minfde_list,
+            scene_miss_list=scene_miss_list,
+            eval_k=eval_k,
+            nan_fill=nan_fill,
+        )
 
 
 class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
@@ -589,13 +731,16 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
         self.log['val_loss'].append(global_loss_sum / max(global_num_ped, 1e-12))
 
     @torch.no_grad()
-    def test(self, loader=None, split="Test", eval_k=5, miss_threshold=2.0):
+    def test(self, loader=None, split="Test", eval_k=5, miss_threshold=2.0, nan_fill="nan"):
         self.model.eval()
         eval_loader = self.loader_test if loader is None else loader
+        if eval_loader is None:
+            raise RuntimeError("Test loader is unavailable. Provide `loader` explicitly or prepare test split.")
         desc = f"{split} {self.hyper_params.dataset.upper()} scene"
         eval_k = int(eval_k)
         miss_threshold = float(miss_threshold)
         minade_list, minfde_list, miss_list = [], [], []
+        scene_minade_list, scene_minfde_list, scene_miss_list = [], [], []
 
         if eval_loader.dataset.anchor is None:
             self.init_adaptive_anchor(eval_loader.dataset)
@@ -615,5 +760,19 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
             minade_list.append(minade)
             minfde_list.append(minfde)
             miss_list.append(miss)
+            scene_id = self._extract_scene_id(batch, minade.shape[0])
+            scene_minade, scene_minfde, scene_miss = self._compute_scene_batch_metrics(minade, minfde, miss, scene_id)
+            scene_minade_list.append(scene_minade)
+            scene_minfde_list.append(scene_minfde)
+            scene_miss_list.append(scene_miss)
 
-        return self._finalize_digir_metrics(minade_list, minfde_list, miss_list, eval_k=eval_k)
+        return self._finalize_digir_metrics(
+            minade_list,
+            minfde_list,
+            miss_list,
+            scene_minade_list=scene_minade_list,
+            scene_minfde_list=scene_minfde_list,
+            scene_miss_list=scene_miss_list,
+            eval_k=eval_k,
+            nan_fill=nan_fill,
+        )
