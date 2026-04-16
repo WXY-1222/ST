@@ -32,8 +32,8 @@ class STTrainer:
 
         self.model, self.optimizer, self.scheduler = None, None, None
         self.loader_train, self.loader_val, self.loader_test = None, None, None
-        self.dataset_dir = hyper_params.dataset_dir + hyper_params.dataset + '/'
-        self.checkpoint_dir = hyper_params.checkpoint_dir + '/' + args.tag + '/' + hyper_params.dataset + '/'
+        self.dataset_dir = os.path.join(hyper_params.dataset_dir, hyper_params.dataset)
+        self.checkpoint_dir = os.path.join(hyper_params.checkpoint_dir, args.tag, hyper_params.dataset)
         if self.is_main:
             print("Checkpoint dir:", self.checkpoint_dir)
         self.log = {'train_loss': [], 'val_loss': []}
@@ -46,10 +46,10 @@ class STTrainer:
                 os.makedirs(self.checkpoint_dir)
 
             if self.is_main:
-                with open(self.checkpoint_dir + 'args.pkl', 'wb') as fp:
+                with open(os.path.join(self.checkpoint_dir, 'args.pkl'), 'wb') as fp:
                     pickle.dump(args, fp)
 
-                with open(self.checkpoint_dir + 'config.pkl', 'wb') as fp:
+                with open(os.path.join(self.checkpoint_dir, 'config.pkl'), 'wb') as fp:
                     pickle.dump(hyper_params, fp)
 
         self.barrier()
@@ -112,6 +112,65 @@ class STTrainer:
                 results[metric_name] = float(local_values.mean()) if local_values.size > 0 else float('nan')
         return results
 
+    def _compute_digir_batch_metrics(self, pred, gt, eval_k=5, miss_threshold=2.0):
+        k = max(1, min(int(eval_k), int(pred.size(0))))
+        pred_k = pred[:k]
+        displacement = (pred_k - gt.unsqueeze(dim=0)).norm(p=2, dim=-1)  # K, N, T
+        min_ade = displacement.mean(dim=2).min(dim=0)[0]
+        min_fde = displacement[:, :, -1].min(dim=0)[0]
+        miss = min_fde.gt(float(miss_threshold)).type_as(min_fde)
+        return (
+            min_ade.detach().cpu().numpy(),
+            min_fde.detach().cpu().numpy(),
+            miss.detach().cpu().numpy(),
+        )
+
+    @staticmethod
+    def _merge_numpy_arrays(local_arrays):
+        if len(local_arrays) == 0:
+            return np.array([], dtype=np.float32)
+        return np.concatenate(local_arrays, axis=0)
+
+    def _gather_numpy_array(self, local_array):
+        if self.distributed and dist.is_available() and dist.is_initialized():
+            gathered = [None for _ in range(self.world_size)]
+            dist.all_gather_object(gathered, local_array)
+            valid = [x for x in gathered if x is not None and len(x) > 0]
+            if len(valid) == 0:
+                return np.array([], dtype=np.float32)
+            return np.concatenate(valid, axis=0)
+        return local_array
+
+    def _finalize_digir_metrics(self, minade_list, minfde_list, miss_list, eval_k=5):
+        minade_local = self._merge_numpy_arrays(minade_list)
+        minfde_local = self._merge_numpy_arrays(minfde_list)
+        miss_local = self._merge_numpy_arrays(miss_list)
+
+        minade_all = self._gather_numpy_array(minade_local)
+        minfde_all = self._gather_numpy_array(minfde_local)
+        miss_all = self._gather_numpy_array(miss_local)
+
+        if minade_all.size == 0 or minfde_all.size == 0 or miss_all.size == 0:
+            return {
+                f"minADE_{int(eval_k)}": float('nan'),
+                f"minFDE_{int(eval_k)}": float('nan'),
+                "MissRate": float('nan'),
+                "IntentAcc": float('nan'),
+                "ITC": float('nan'),
+                "CollisionRate": float('nan'),
+                "OffRoadRate": float('nan'),
+            }
+
+        return {
+            f"minADE_{int(eval_k)}": float(minade_all.mean()),
+            f"minFDE_{int(eval_k)}": float(minfde_all.mean()),
+            "MissRate": float(miss_all.mean()),
+            "IntentAcc": float('nan'),
+            "ITC": float('nan'),
+            "CollisionRate": float('nan'),
+            "OffRoadRate": float('nan'),
+        }
+
     @staticmethod
     def _unpack_obs_pred_batch(batch):
         if isinstance(batch, dict):
@@ -149,13 +208,16 @@ class STTrainer:
         raise NotImplementedError
 
     @torch.no_grad()
-    def test(self):
+    def test(self, loader=None, split="Test", eval_k=5, miss_threshold=2.0):
         raise NotImplementedError
 
     def fit(self):
         if self.is_main:
             print("Training started...")
         best_val = float('inf')
+        eval_every = max(1, int(getattr(self.args, "eval_every", 1)))
+        eval_k = int(getattr(self.args, "eval_k", 5))
+        miss_threshold = float(getattr(self.args, "miss_threshold", 2.0))
 
         for epoch in range(self.hyper_params.num_epochs):
             self._set_epoch(epoch)
@@ -176,6 +238,24 @@ class STTrainer:
                 print("Train_loss: {0:.8f}, Val_los: {1:.8f}".format(self.log['train_loss'][-1], current_val))
                 print("Min_val_epoch: {0}, Min_val_loss: {1:.8f}".format(np.array(self.log['val_loss']).argmin(),
                                                                          np.array(self.log['val_loss']).min()))
+            should_eval = ((epoch + 1) % eval_every == 0) or (epoch + 1 == self.hyper_params.num_epochs)
+            if should_eval:
+                eval_results = self.test(
+                    loader=self.loader_val,
+                    split="Eval",
+                    eval_k=eval_k,
+                    miss_threshold=miss_threshold,
+                )
+                if self.is_main:
+                    print("Eval metrics:")
+                    print(f"  minADE_{eval_k}: {eval_results[f'minADE_{eval_k}']:.6f}")
+                    print(f"  minFDE_{eval_k}: {eval_results[f'minFDE_{eval_k}']:.6f}")
+                    print(f"  MissRate: {eval_results['MissRate']:.2%}")
+                    print("  IntentAcc: N/A (ST dataset has no intent labels)")
+                    print("  ITC: N/A (ST dataset has no intent labels)")
+                    print("  CollisionRate: N/A (not defined in ST evaluator)")
+                    print("  OffRoadRate: N/A (no map/off-road labels in ST pipeline)")
+            if self.is_main:
                 print(" ")
             self.barrier()
 
@@ -190,7 +270,7 @@ class STTrainer:
         return self.stats_meter
 
     def load_model(self, filename='model_best.pth'):
-        model_path = self.checkpoint_dir + filename
+        model_path = os.path.join(self.checkpoint_dir, filename)
         state_dict = torch.load(model_path, map_location=self.device)
         self.unwrap_model().load_state_dict(state_dict)
         self.barrier()
@@ -200,7 +280,7 @@ class STTrainer:
             return
         if not os.path.exists(self.checkpoint_dir):
             os.makedirs(self.checkpoint_dir)
-        model_path = self.checkpoint_dir + filename
+        model_path = os.path.join(self.checkpoint_dir, filename)
         torch.save(self.unwrap_model().state_dict(), model_path)
 
 
@@ -232,6 +312,7 @@ class STSequencedMiniBatchTrainer(STTrainer):
         self.model.train()
         loss_batch = 0.0
         loss_cum = None
+        accum_steps = 0
         num_batches = 0.0
 
         loader = self._progress(self.loader_train, desc=f'Train Epoch {epoch}')
@@ -244,12 +325,12 @@ class STSequencedMiniBatchTrainer(STTrainer):
             output = self.model(obs_traj, pred_traj)
 
             loss = torch.nan_to_num(output["loss_euclidean_ade"], nan=0.0)
+            loss_cum = loss if loss_cum is None else (loss_cum + loss)
+            accum_steps += 1
             if (cnt % self.hyper_params.batch_size != 0) and (cnt != len(self.loader_train)):
-                loss_cum = loss if loss_cum is None else (loss_cum + loss)
                 continue
 
-            loss_cum = loss if loss_cum is None else (loss_cum + loss)
-            loss_cum = loss_cum / self.hyper_params.batch_size
+            loss_cum = loss_cum / max(accum_steps, 1)
             loss_cum.backward()
 
             if self.hyper_params.clip_grad is not None:
@@ -259,6 +340,7 @@ class STSequencedMiniBatchTrainer(STTrainer):
             loss_batch += float(loss_cum.item())
             num_batches += 1.0
             loss_cum = None
+            accum_steps = 0
 
         global_loss, global_denom = self._reduce_sum_count(loss_batch, max(num_batches, 1.0))
         self.log['train_loss'].append(global_loss / max(global_denom, 1e-12))
@@ -284,24 +366,29 @@ class STSequencedMiniBatchTrainer(STTrainer):
         self.log['val_loss'].append(global_loss_sum / max(global_num_ped, 1e-12))
 
     @torch.no_grad()
-    def test(self):
+    def test(self, loader=None, split="Test", eval_k=5, miss_threshold=2.0):
         self.model.eval()
-        self.reset_metric()
+        eval_loader = self.loader_test if loader is None else loader
+        desc = f"{split} {self.hyper_params.dataset.upper()} scene"
+        eval_k = int(eval_k)
+        miss_threshold = float(miss_threshold)
+        minade_list, minfde_list, miss_list = [], [], []
 
-        loader = self._progress(self.loader_test, desc=f"Test {self.hyper_params.dataset.upper()} scene")
-        for batch in loader:
+        loader_iter = self._progress(eval_loader, desc=desc)
+        for batch in loader_iter:
             obs_traj, pred_traj = self._unpack_obs_pred_batch(batch)
             obs_traj = obs_traj.to(self.device, non_blocking=True)
             pred_traj = pred_traj.to(self.device, non_blocking=True)
 
             output = self.model(obs_traj)
+            minade, minfde, miss = self._compute_digir_batch_metrics(
+                output["recon_traj"], pred_traj, eval_k=eval_k, miss_threshold=miss_threshold
+            )
+            minade_list.append(minade)
+            minfde_list.append(minfde)
+            miss_list.append(miss)
 
-            # Evaluate trajectories
-            for metric in self.stats_func.keys():
-                value = self.stats_func[metric](output["recon_traj"], pred_traj)
-                self.stats_meter[metric].extend(value)
-
-        return self._collect_metric_means()
+        return self._finalize_digir_metrics(minade_list, minfde_list, miss_list, eval_k=eval_k)
 
 
 class STCollatedMiniBatchTrainer(STTrainer):
@@ -377,24 +464,29 @@ class STCollatedMiniBatchTrainer(STTrainer):
         self.log['val_loss'].append(global_loss_sum / max(global_num_ped, 1e-12))
 
     @torch.no_grad()
-    def test(self):
+    def test(self, loader=None, split="Test", eval_k=5, miss_threshold=2.0):
         self.model.eval()
-        self.reset_metric()
+        eval_loader = self.loader_test if loader is None else loader
+        desc = f"{split} {self.hyper_params.dataset.upper()} scene"
+        eval_k = int(eval_k)
+        miss_threshold = float(miss_threshold)
+        minade_list, minfde_list, miss_list = [], [], []
 
-        loader = self._progress(self.loader_test, desc=f"Test {self.hyper_params.dataset.upper()} scene")
-        for batch in loader:
+        loader_iter = self._progress(eval_loader, desc=desc)
+        for batch in loader_iter:
             obs_traj, pred_traj = self._unpack_obs_pred_batch(batch)
             obs_traj = obs_traj.to(self.device, non_blocking=True)
             pred_traj = pred_traj.to(self.device, non_blocking=True)
 
             output = self.model(obs_traj)
+            minade, minfde, miss = self._compute_digir_batch_metrics(
+                output["recon_traj"], pred_traj, eval_k=eval_k, miss_threshold=miss_threshold
+            )
+            minade_list.append(minade)
+            minfde_list.append(minfde)
+            miss_list.append(miss)
 
-            # Evaluate trajectories
-            for metric in self.stats_func.keys():
-                value = self.stats_func[metric](output["recon_traj"], pred_traj)
-                self.stats_meter[metric].extend(value)
-
-        return self._collect_metric_means()
+        return self._finalize_digir_metrics(minade_list, minfde_list, miss_list, eval_k=eval_k)
 
 
 class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
@@ -489,15 +581,19 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
         self.log['val_loss'].append(global_loss_sum / max(global_num_ped, 1e-12))
 
     @torch.no_grad()
-    def test(self):
+    def test(self, loader=None, split="Test", eval_k=5, miss_threshold=2.0):
         self.model.eval()
-        self.reset_metric()
+        eval_loader = self.loader_test if loader is None else loader
+        desc = f"{split} {self.hyper_params.dataset.upper()} scene"
+        eval_k = int(eval_k)
+        miss_threshold = float(miss_threshold)
+        minade_list, minfde_list, miss_list = [], [], []
 
-        if self.loader_test.dataset.anchor is None:
-            self.init_adaptive_anchor(self.loader_test.dataset)
+        if eval_loader.dataset.anchor is None:
+            self.init_adaptive_anchor(eval_loader.dataset)
 
-        loader = self._progress(self.loader_test, desc=f"Test {self.hyper_params.dataset.upper()} scene")
-        for batch in loader:
+        loader_iter = self._progress(eval_loader, desc=desc)
+        for batch in loader_iter:
             obs_traj = batch["obs_traj"].to(self.device, non_blocking=True)
             pred_traj = batch["pred_traj"].to(self.device, non_blocking=True)
             adaptive_anchor = batch["anchor"].to(self.device, non_blocking=True)
@@ -505,9 +601,11 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
 
             additional_information = {"scene_mask": scene_mask, "num_samples": self.hyper_params.num_samples}
             output = self.model(obs_traj, adaptive_anchor, addl_info=additional_information)
+            minade, minfde, miss = self._compute_digir_batch_metrics(
+                output["recon_traj"], pred_traj, eval_k=eval_k, miss_threshold=miss_threshold
+            )
+            minade_list.append(minade)
+            minfde_list.append(minfde)
+            miss_list.append(miss)
 
-            for metric in self.stats_func.keys():
-                value = self.stats_func[metric](output["recon_traj"], pred_traj)
-                self.stats_meter[metric].extend(value)
-
-        return self._collect_metric_means()
+        return self._finalize_digir_metrics(minade_list, minfde_list, miss_list, eval_k=eval_k)

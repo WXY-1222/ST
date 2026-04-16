@@ -41,6 +41,9 @@ if __name__ == '__main__':
     parser.add_argument('--dist_backend', default="nccl", choices=["nccl", "gloo"], type=str, help="distributed backend for torchrun")
     parser.add_argument('--dataset_dir', default="", type=str, help="override dataset root directory in config")
     parser.add_argument('--checkpoint_dir', default="", type=str, help="override checkpoint root directory in config")
+    parser.add_argument('--eval_every', default=1, type=int, help="run metric evaluation every N epochs")
+    parser.add_argument('--eval_k', default=5, type=int, help="K used for minADE_K/minFDE_K")
+    parser.add_argument('--miss_threshold', default=2.0, type=float, help="MissRate threshold in meters")
     args = parser.parse_args()
 
     # Respect single-process GPU selection while keeping torchrun behavior unchanged.

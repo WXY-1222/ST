@@ -39,7 +39,7 @@ def get_dataloader(
 
     assert phase in ['train', 'val', 'test']
 
-    data_set = data_dir + '/' + phase + '/'
+    data_set = os.path.join(data_dir, phase)
     shuffle = True if phase == 'train' else False
     drop_last = True if phase == 'train' else False
 

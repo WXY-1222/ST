@@ -82,7 +82,7 @@ def augment_trajectory(obs_traj, pred_traj, flip=True, reverse=True):
     if flip:
         obs_traj = torch.cat([obs_traj, obs_traj * torch.FloatTensor([[[1, -1]]])], dim=0)
         pred_traj = torch.cat([pred_traj, pred_traj * torch.FloatTensor([[[1, -1]]])], dim=0)
-    elif reverse:
+    if reverse:
         full_traj = torch.cat([obs_traj, pred_traj], dim=1)  # NTC
         obs_traj = torch.cat([obs_traj, full_traj.flip(1)[:, :obs_traj.size(1)]], dim=0)
         pred_traj = torch.cat([pred_traj, full_traj.flip(1)[:, obs_traj.size(1):]], dim=0)
