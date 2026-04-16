@@ -75,7 +75,7 @@ class STTrainer:
             return
         backend = dist.get_backend()
         with torch.no_grad():
-            for value in self.unwrap_model().state_dict().values():
+            for name, value in self.unwrap_model().state_dict().items():
                 if not torch.is_tensor(value):
                     continue
 
@@ -88,7 +88,14 @@ class STTrainer:
                     tensor_to_broadcast = tensor_to_broadcast.to(self.device)
                     moved_to_cuda = True
 
-                dist.broadcast(tensor_to_broadcast, src=0)
+                try:
+                    dist.broadcast(tensor_to_broadcast, src=0)
+                except Exception as exc:
+                    raise RuntimeError(
+                        "DDP broadcast failed for "
+                        f"`{name}` shape={tuple(value.shape)} dtype={value.dtype} "
+                        f"device={value.device} contiguous={value.is_contiguous()}"
+                    ) from exc
 
                 needs_copy_back = (tensor_to_broadcast.data_ptr() != value.data_ptr()) or moved_to_cuda
                 if needs_copy_back:

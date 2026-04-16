@@ -47,6 +47,13 @@ class SingularTrajectory(nn.Module):
         obs_m_traj, pred_m_traj = obs_traj[mask], pred_traj[mask]
         obs_s_traj, pred_s_traj = obs_traj[~mask], pred_traj[~mask]
 
+        # INTERACTION can be highly imbalanced (all-moving or all-static in a slice).
+        # Keep both branches valid by falling back to the full set when one branch is empty.
+        if obs_m_traj.size(0) == 0:
+            obs_m_traj, pred_m_traj = obs_traj, pred_traj
+        if obs_s_traj.size(0) == 0:
+            obs_s_traj, pred_s_traj = obs_traj, pred_traj
+
         # Descriptor initialization
         data_m = self.Singular_space_m.parameter_initialization(obs_m_traj, pred_m_traj)
         data_s = self.Singular_space_s.parameter_initialization(obs_s_traj, pred_s_traj)

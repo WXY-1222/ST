@@ -83,7 +83,22 @@ class AdaptiveAnchor(nn.Module):
 
         # Trajectory projection
         C_pred = self.to_Singular_space(pred_traj_norm, evec=V_pred_trunc).T.detach().numpy()
-        C_anchor = torch.FloatTensor(KMeans(n_clusters=self.s, random_state=0, init='k-means++', n_init=1).fit(C_pred).cluster_centers_.T)
+
+        if C_pred.shape[0] == 0:
+            C_anchor = torch.zeros((self.k, self.s), dtype=torch.float32)
+        else:
+            n_clusters = max(1, min(self.s, int(C_pred.shape[0])))
+            centers = KMeans(
+                n_clusters=n_clusters,
+                random_state=0,
+                init='k-means++',
+                n_init=1,
+            ).fit(C_pred).cluster_centers_
+            if n_clusters < self.s:
+                # Repeat the first center to keep the expected (k, s) shape.
+                pad = np.repeat(centers[:1], repeats=(self.s - n_clusters), axis=0)
+                centers = np.concatenate([centers, pad], axis=0)
+            C_anchor = torch.from_numpy(centers.T.copy()).float()
 
         # Register anchors as model parameters
         self.C_anchor = nn.Parameter(C_anchor.to(self.C_anchor.device))
